@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import plotly.graph_objects as go
+import networkx as nx
 from huggingface_hub import HfFileSystem
 import config
 from us_calendar import next_trading_day
@@ -73,23 +74,44 @@ for universe_name, uni_data in universes.items():
     if not top_etfs:
         continue
     st.markdown(f'<div class="universe-title">{universe_name.replace("_", " ").title()}</div>', unsafe_allow_html=True)
+    
+    # Top 3 cards
     cols = st.columns(3)
     for idx, etf in enumerate(top_etfs):
         with cols[idx]:
             st.metric(etf['ticker'], f"centrality = {etf['centrality']:.4f}")
+    
+    # Full ranking table (all ETFs)
+    full = uni_data.get("full_scores", {})
+    if full:
+        df_full = pd.DataFrame(list(full.items()), columns=["ETF", "Topological Centrality"])
+        df_full = df_full.sort_values("Topological Centrality", ascending=False)
+        with st.expander(f"📋 Full ranking – all ETFs in {universe_name}"):
+            st.dataframe(df_full, use_container_width=True, hide_index=True)
+        
+        # Dropdown to select an ETF and see its details
+        etf_options = list(full.keys())
+        selected_etf = st.selectbox(f"Select ETF to see detailed information", etf_options, key=f"select_{universe_name}")
+        if selected_etf:
+            cent = full[selected_etf]
+            st.write(f"**Centrality:** {cent:.4f}")
+            # Find nodes that contain this ETF
+            graph = uni_data.get("graph", {})
+            nodes = graph.get("nodes", [])
+            containing_nodes = [n for n in nodes if selected_etf in n.get("members", [])]
+            if containing_nodes:
+                st.write(f"**Appears in {len(containing_nodes)} node(s):**")
+                for n in containing_nodes:
+                    st.write(f"- Node {n['id']} (size {n['size']}, centrality {n['centrality']:.3f}) – members: {', '.join(n['members'][:5])}{'...' if len(n['members'])>5 else ''}")
+            else:
+                st.write("Not found in any node? (Should not happen)")
+    
     # Plot interactive graph
     graph = uni_data.get("graph", {})
     if graph:
         nodes = graph.get("nodes", [])
         edges = graph.get("edges", [])
         if nodes and edges:
-            # Create Plotly graph
-            node_ids = [n["id"] for n in nodes]
-            node_cent = [n["centrality"] for n in nodes]
-            node_sizes = [n["size"] * 5 for n in nodes]  # scale
-            # Position using a simple spring layout (we can compute in Python, but for interactive we need fixed pos)
-            # We'll compute positions using networkx on the fly (but we don't have networkx in streamlit? we can add it)
-            import networkx as nx
             G = nx.Graph()
             for n in nodes:
                 G.add_node(n["id"])
@@ -105,6 +127,8 @@ for universe_name, uni_data in universes.items():
                 edge_y.extend([y0, y1, None])
             node_x = [pos[n["id"]][0] for n in nodes]
             node_y = [pos[n["id"]][1] for n in nodes]
+            node_cent = [n["centrality"] for n in nodes]
+            node_sizes = [n["size"] * 5 for n in nodes]
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=edge_x, y=edge_y, mode='lines', line=dict(color='gray', width=1),
@@ -127,12 +151,6 @@ for universe_name, uni_data in universes.items():
                 margin=dict(l=0,r=0,t=40,b=0)
             )
             st.plotly_chart(fig, use_container_width=True)
-    with st.expander("📋 Full ranking (all ETFs)"):
-        full = uni_data.get("full_scores", {})
-        if full:
-            df = pd.DataFrame(list(full.items()), columns=["ETF", "Topological Centrality"])
-            df = df.sort_values("Topological Centrality", ascending=False)
-            st.dataframe(df, use_container_width=True, hide_index=True)
     st.divider()
 
 st.caption("The Mapper algorithm constructs a topological graph of the ETF return space. Nodes represent clusters of ETFs with similar return patterns over the last 252 days. Edges indicate overlapping clusters. ETF centrality is the degree of the most central node containing that ETF. Higher centrality = more central in the topological structure.")
